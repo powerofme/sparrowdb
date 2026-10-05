@@ -721,6 +721,159 @@ sys.stdout.buffer.write(buf.to_pybytes())
     }
 
     [Fact]
+    public void Test_NativeArrowIpc_StressTest_1MM_Rows_100_Columns_DictionaryEncoded()
+    {
+        // 1MM rows, 100 columns (60 dictionary-encoded strings, 20 int32, 10 int64, 5 double, 5 timestamp) in 1 file
+        int totalRows = 1_000_000;
+        int batchSize = 100_000;
+        int batchCount = totalRows / batchSize;
+
+        var dictType = new DictionaryType(Int32Type.Default, StringType.Default, ordered: false);
+
+        // Build 100-column schema
+        var schemaBuilder = new Schema.Builder();
+
+        // 60 dictionary-encoded string columns
+        for (int i = 0; i < 60; i++)
+            schemaBuilder.Field(f => f.Name($"dict_str_{i}").DataType(dictType));
+
+        // 20 int32 columns
+        for (int i = 0; i < 20; i++)
+            schemaBuilder.Field(f => f.Name($"int_{i}").DataType(Int32Type.Default));
+
+        // 10 int64 columns
+        for (int i = 0; i < 10; i++)
+            schemaBuilder.Field(f => f.Name($"long_{i}").DataType(Int64Type.Default));
+
+        // 5 double columns
+        for (int i = 0; i < 5; i++)
+            schemaBuilder.Field(f => f.Name($"dbl_{i}").DataType(DoubleType.Default));
+
+        // 5 timestamp columns
+        for (int i = 0; i < 5; i++)
+            schemaBuilder.Field(f => f.Name($"ts_{i}").DataType(new TimestampType(TimeUnit.Microsecond, "UTC")));
+
+        var schema = schemaBuilder.Build();
+        Assert.Equal(100, schema.FieldsList.Count);
+
+        string tempIpcFile = Path.Combine(Path.GetTempPath(), $"wide_1mm_dict_test_{Guid.NewGuid():N}.arrow");
+
+        try
+        {
+            var dictValuesBuilder = new StringArray.Builder();
+            string[] sampleCategories = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta", "Theta"];
+            foreach (var cat in sampleCategories) dictValuesBuilder.Append(cat);
+            var dictValues = dictValuesBuilder.Build();
+
+            // 1. Generate 1MM rows x 100 columns dictionary-encoded into 1 Arrow IPC file
+            var swGen = Stopwatch.StartNew();
+            using (var fs = new FileStream(tempIpcFile, FileMode.Create, FileAccess.Write, FileShare.None, 4 * 1024 * 1024))
+            using (var writer = new ArrowStreamWriter(fs, schema))
+            {
+                DateTimeOffset baseTime = DateTimeOffset.UtcNow;
+
+                for (int b = 0; b < batchCount; b++)
+                {
+                    int startOffset = b * batchSize;
+
+                    var idxBuilders = new Int32Array.Builder[60];
+                    for (int s = 0; s < 60; s++) idxBuilders[s] = new Int32Array.Builder();
+
+                    var intBuilders = new Int32Array.Builder[20];
+                    for (int n = 0; n < 20; n++) intBuilders[n] = new Int32Array.Builder();
+
+                    var longBuilders = new Int64Array.Builder[10];
+                    for (int l = 0; l < 10; l++) longBuilders[l] = new Int64Array.Builder();
+
+                    var dblBuilders = new DoubleArray.Builder[5];
+                    for (int d = 0; d < 5; d++) dblBuilders[d] = new DoubleArray.Builder();
+
+                    var tsBuilders = new TimestampArray.Builder[5];
+                    for (int t = 0; t < 5; t++) tsBuilders[t] = new TimestampArray.Builder();
+
+                    for (int r = 0; r < batchSize; r++)
+                    {
+                        int rowId = startOffset + r;
+
+                        for (int s = 0; s < 60; s++)
+                            idxBuilders[s].Append((rowId + s) % 8);
+
+                        for (int n = 0; n < 20; n++)
+                            intBuilders[n].Append(rowId * 10 + n);
+
+                        for (int l = 0; l < 10; l++)
+                            longBuilders[l].Append((long)rowId * 1000 + l);
+
+                        for (int d = 0; d < 5; d++)
+                            dblBuilders[d].Append(rowId * 1.25 + d);
+
+                        for (int t = 0; t < 5; t++)
+                            tsBuilders[t].Append(baseTime.AddSeconds(rowId));
+                    }
+
+                    var columns = new IArrowArray[100];
+                    int colIdx = 0;
+                    for (int s = 0; s < 60; s++)
+                        columns[colIdx++] = new DictionaryArray(dictType, idxBuilders[s].Build(), dictValues);
+
+                    for (int n = 0; n < 20; n++) columns[colIdx++] = intBuilders[n].Build();
+                    for (int l = 0; l < 10; l++) columns[colIdx++] = longBuilders[l].Build();
+                    for (int d = 0; d < 5; d++) columns[colIdx++] = dblBuilders[d].Build();
+                    for (int t = 0; t < 5; t++) columns[colIdx++] = tsBuilders[t].Build();
+
+                    var batch = new RecordBatch(schema, columns, batchSize);
+                    writer.WriteRecordBatch(batch);
+                }
+                writer.WriteEnd();
+            }
+            swGen.Stop();
+
+            long fileSizeBytes = new FileInfo(tempIpcFile).Length;
+            double fileSizeMB = fileSizeBytes / (1024.0 * 1024.0);
+
+            // 2. Measure Native Arrow IPC Ingestion Time into DuckDB
+            using var db = new Database(":memory:");
+            var conn = db.Connection;
+
+            var swIngest = Stopwatch.StartNew();
+            conn.IngestArrowIpcFileNative("wide_1mm_dict_table", tempIpcFile);
+            swIngest.Stop();
+
+            long ingestMs = swIngest.ElapsedMilliseconds;
+            double rowsPerSec = (totalRows / (double)ingestMs) * 1000.0;
+            double mbPerSec = (fileSizeMB / (ingestMs / 1000.0));
+
+            Console.WriteLine($"=================================================================================");
+            Console.WriteLine($" 1MM Rows x 100 Columns (60 Dictionary-Encoded Strings) Stress Test Results");
+            Console.WriteLine($" Total Rows:           {totalRows:N0}");
+            Console.WriteLine($" Columns:              100 (60 Dict-String, 20 Int32, 10 Int64, 5 Double, 5 Timestamp)");
+            Console.WriteLine($" File Size:            {fileSizeMB:F2} MB");
+            Console.WriteLine($" Generation Time:      {swGen.ElapsedMilliseconds:N0} ms");
+            Console.WriteLine($" Ingestion Time:       {ingestMs:N0} ms");
+            Console.WriteLine($" Ingestion Throughput: {rowsPerSec:N0} rows/s ({mbPerSec:F1} MB/s)");
+            Console.WriteLine($"=================================================================================");
+
+            // 3. Verify correctness
+            using var countRes = conn.ExecuteQuery("SELECT count(*) FROM wide_1mm_dict_table;");
+            Assert.Equal(1_000_000L, countRes.GetValue<long>(0, 0));
+
+            using var sampleRes = conn.ExecuteQuery("SELECT dict_str_0, dict_str_59, int_0, long_0, dbl_0 FROM wide_1mm_dict_table LIMIT 5;");
+            Assert.Equal(5L, sampleRes.RowCount);
+            Assert.Equal("Alpha", sampleRes.GetString(0, 0));
+
+            using var distinctRes = conn.ExecuteQuery("SELECT count(DISTINCT dict_str_0) FROM wide_1mm_dict_table;");
+            Assert.Equal(8L, distinctRes.GetValue<long>(0, 0));
+        }
+        finally
+        {
+            if (File.Exists(tempIpcFile))
+            {
+                try { File.Delete(tempIpcFile); } catch { }
+            }
+        }
+    }
+
+    [Fact]
     public void Test_NativeArrowIpc_DictionaryEncoding_Success()
     {
         using var db = new Database(":memory:");

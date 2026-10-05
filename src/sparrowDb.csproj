@@ -15,4 +15,9 @@
     <PackageReference Include="DuckDB.NET.Data.Full" Version="1.1.3" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="sparrowDb.Tests" />
+    <InternalsVisibleTo Include="sparrowDb.BenchmarkRunner" />
+  </ItemGroup>
+
 </Project>

@@ -55,6 +55,48 @@ public unsafe sealed class Connection : IDisposable
         return new Statement(stmtHandle, this);
     }
 
+    public void IngestArrowIpcNative(
+        string tableName,
+        ReadOnlyMemory<byte> arrowIpc,
+        bool autoCreateTable = true)
+    {
+        Arrow.NativeArrowIpcReader.IngestArrowIpcNative(this, tableName, arrowIpc, autoCreateTable);
+    }
+
+    public void IngestArrowIpcNative(
+        string tableName,
+        byte[] arrowIpc,
+        bool autoCreateTable = true)
+    {
+        if (arrowIpc == null)
+            throw new ArgumentNullException(nameof(arrowIpc));
+        IngestArrowIpcNative(tableName, (ReadOnlyMemory<byte>)arrowIpc, autoCreateTable);
+    }
+
+    public void IngestArrowIpcNative(
+        string tableName,
+        ReadOnlySpan<byte> arrowIpc,
+        bool autoCreateTable = true)
+    {
+        IngestArrowIpcNative(tableName, (ReadOnlyMemory<byte>)arrowIpc.ToArray(), autoCreateTable);
+    }
+
+    public void IngestArrowIpcFileNative(
+        string tableName,
+        string filePath,
+        bool autoCreateTable = true)
+    {
+        Arrow.NativeArrowIpcReader.IngestArrowIpcFileNative(this, tableName, filePath, autoCreateTable);
+    }
+
+    public void IngestArrowIpcStreamNative(
+        string tableName,
+        System.IO.Stream stream,
+        bool autoCreateTable = true)
+    {
+        Arrow.NativeArrowIpcReader.IngestArrowIpcStreamNative(this, tableName, stream, autoCreateTable);
+    }
+
     public void Dispose()
     {
         if (!_disposed)

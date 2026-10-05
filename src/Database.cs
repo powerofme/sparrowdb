@@ -43,6 +43,46 @@ public sealed class Database : IDisposable
         ArrowBatchReader.IngestIpcStreamSync(_connection, tableName, schema, arrowBytes);
     }
 
+    public void IngestArrowIpcNative(
+        string tableName,
+        ReadOnlyMemory<byte> arrowIpc,
+        bool autoCreateTable = true)
+    {
+        _connection.IngestArrowIpcNative(tableName, arrowIpc, autoCreateTable);
+    }
+
+    public void IngestArrowIpcNative(
+        string tableName,
+        byte[] arrowIpc,
+        bool autoCreateTable = true)
+    {
+        _connection.IngestArrowIpcNative(tableName, arrowIpc, autoCreateTable);
+    }
+
+    public void IngestArrowIpcNative(
+        string tableName,
+        ReadOnlySpan<byte> arrowIpc,
+        bool autoCreateTable = true)
+    {
+        _connection.IngestArrowIpcNative(tableName, arrowIpc, autoCreateTable);
+    }
+
+    public void IngestArrowIpcFileNative(
+        string tableName,
+        string filePath,
+        bool autoCreateTable = true)
+    {
+        _connection.IngestArrowIpcFileNative(tableName, filePath, autoCreateTable);
+    }
+
+    public void IngestArrowIpcStreamNative(
+        string tableName,
+        System.IO.Stream stream,
+        bool autoCreateTable = true)
+    {
+        _connection.IngestArrowIpcStreamNative(tableName, stream, autoCreateTable);
+    }
+
     public async Task IngestArrowStreamAsync(string tableName, Schema schema, byte[] arrowBytes)
     {
         await ArrowBatchReader.IngestIpcStreamAsync(_connection, tableName, schema, arrowBytes);

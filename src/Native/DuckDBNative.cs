@@ -106,6 +106,6 @@ public static unsafe class DuckDBNative
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
     public static extern DuckDBState duckdb_query_arrow(ConnectionSafeHandle connection, string query, out void* result_arrow);
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl)]
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
     public static extern DuckDBState duckdb_arrow_scan(ConnectionSafeHandle connection, string table_name, ArrowArrayStream* arrow_stream);
 }

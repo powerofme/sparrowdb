@@ -10,6 +10,7 @@ Designed for high-throughput, low-latency analytical workloads, sparrowDb operat
 
 - **100% In-Memory Columnar Engine**: Runs embedded DuckDB instances directly in RAM. Zero temporary disk files, zero housekeeping requirements.
 - **Apache Arrow IPC Streaming**: Ingest Apache Arrow IPC byte streams directly into columnar tables at memory bandwidth speeds.
+- **In-Memory Parquet Byte Buffers & Chunking**: Export and ingest Parquet directly as `byte[]` or chunked `IEnumerable<byte[]>` without local disk persistence—ideal for custom HTTP connection pooling and parallel blob loading with IBM COS or S3.
 - **Vectorized Analytical SQL**: Native SIMD-accelerated filtering, aggregation, and pivoting over millions of records in milliseconds.
 - **Enterprise Object Storage**: Stream data directly to and from S3-compatible cloud object storage without touching local disk.
 

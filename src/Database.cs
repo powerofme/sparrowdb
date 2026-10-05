@@ -73,6 +73,31 @@ public sealed class Database : IDisposable
         S3Storage.ExportToS3(_connection, tableName, s3Path, format);
     }
 
+    public byte[] ExportToParquet(string tableName, string compression = "ZSTD")
+    {
+        return Parquet.ParquetBuffer.ExportTableToParquetBytes(_connection, tableName, compression);
+    }
+
+    public byte[] ExportQueryToParquet(string querySql, string compression = "ZSTD")
+    {
+        return Parquet.ParquetBuffer.ExportQueryToParquetBytes(_connection, querySql, compression);
+    }
+
+    public System.Collections.Generic.IEnumerable<byte[]> ExportToParquetChunks(string tableName, int rowsPerChunk = 50_000, string compression = "ZSTD")
+    {
+        return Parquet.ParquetBuffer.ExportTableToParquetChunks(_connection, tableName, rowsPerChunk, compression);
+    }
+
+    public void IngestParquetBytes(string tableName, byte[] parquetBytes)
+    {
+        Parquet.ParquetBuffer.IngestParquetBytes(_connection, tableName, parquetBytes);
+    }
+
+    public void IngestParquetChunks(string tableName, System.Collections.Generic.IEnumerable<byte[]> parquetChunks)
+    {
+        Parquet.ParquetBuffer.IngestParquetChunks(_connection, tableName, parquetChunks);
+    }
+
     public void Dispose()
     {
         if (!_disposed)

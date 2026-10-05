@@ -720,6 +720,237 @@ sys.stdout.buffer.write(buf.to_pybytes())
         }
     }
 
+    [Fact]
+    public void Test_NativeArrowIpc_DictionaryEncoding_Success()
+    {
+        using var db = new Database(":memory:");
+        var conn = db.Connection;
+
+        var statusDictType = new DictionaryType(Int32Type.Default, StringType.Default, ordered: false);
+        var countryDictType = new DictionaryType(Int16Type.Default, StringType.Default, ordered: false);
+
+        var schema = new Schema.Builder()
+            .Field(f => f.Name("user_id").DataType(Int32Type.Default))
+            .Field(f => f.Name("status").DataType(statusDictType))
+            .Field(f => f.Name("country").DataType(countryDictType))
+            .Build();
+
+        int rowCount = 100;
+        var idBuilder = new Int32Array.Builder();
+        var statusIdxBuilder = new Int32Array.Builder();
+        var countryIdxBuilder = new Int16Array.Builder();
+
+        for (int i = 0; i < rowCount; i++)
+        {
+            idBuilder.Append(i);
+            if (i % 10 == 0)
+            {
+                statusIdxBuilder.AppendNull();
+            }
+            else
+            {
+                statusIdxBuilder.Append(i % 3); // 0 = PENDING, 1 = ACTIVE, 2 = SUSPENDED
+            }
+
+            countryIdxBuilder.Append((short)(i % 4)); // 0 = US, 1 = UK, 2 = DE, 3 = JP
+        }
+
+        var statusValuesBuilder = new StringArray.Builder();
+        statusValuesBuilder.Append("PENDING");
+        statusValuesBuilder.Append("ACTIVE");
+        statusValuesBuilder.Append("SUSPENDED");
+        var statusValues = statusValuesBuilder.Build();
+
+        var countryValuesBuilder = new StringArray.Builder();
+        countryValuesBuilder.Append("US");
+        countryValuesBuilder.Append("UK");
+        countryValuesBuilder.Append("DE");
+        countryValuesBuilder.Append("JP");
+        var countryValues = countryValuesBuilder.Build();
+
+        var statusArr = new DictionaryArray(statusDictType, statusIdxBuilder.Build(), statusValues);
+        var countryArr = new DictionaryArray(countryDictType, countryIdxBuilder.Build(), countryValues);
+
+        var batch = new RecordBatch(schema, new IArrowArray[]
+        {
+            idBuilder.Build(),
+            statusArr,
+            countryArr
+        }, rowCount);
+
+        byte[] ipcBytes = SerializeBatch(schema, batch);
+
+        // Ingest into DuckDB
+        conn.IngestArrowIpcNative("dict_users", ipcBytes);
+
+        // Verify total rows
+        using var countRes = conn.ExecuteQuery("SELECT count(*), count(status), count(country) FROM dict_users;");
+        Assert.Equal(100L, countRes.GetValue<long>(0, 0));
+        Assert.Equal(90L, countRes.GetValue<long>(0, 1)); // 10 nulls
+        Assert.Equal(100L, countRes.GetValue<long>(0, 2));
+
+        // Verify distinct values
+        using var distinctRes = conn.ExecuteQuery("SELECT count(DISTINCT status), count(DISTINCT country) FROM dict_users;");
+        Assert.Equal(3L, distinctRes.GetValue<long>(0, 0));
+        Assert.Equal(4L, distinctRes.GetValue<long>(0, 1));
+
+        // Verify decoded text values
+        using var filterRes = conn.ExecuteQuery("SELECT count(*) FROM dict_users WHERE status = 'ACTIVE';");
+        Assert.True(filterRes.GetValue<long>(0, 0) > 0);
+
+        using var countryFilterRes = conn.ExecuteQuery("SELECT count(*) FROM dict_users WHERE country = 'US';");
+        Assert.Equal(25L, countryFilterRes.GetValue<long>(0, 0));
+
+        // Verify null preservation
+        using var nullRes = conn.ExecuteQuery("SELECT count(*) FROM dict_users WHERE status IS NULL;");
+        Assert.Equal(10L, nullRes.GetValue<long>(0, 0));
+    }
+
+    [Fact]
+    public void Test_NativeArrowIpc_DictionaryEncoding_ParquetExport_Verification()
+    {
+        using var db = new Database(":memory:");
+        var conn = db.Connection;
+
+        var dictType = new DictionaryType(Int32Type.Default, StringType.Default, ordered: false);
+        var schema = new Schema.Builder()
+            .Field(f => f.Name("id").DataType(Int32Type.Default))
+            .Field(f => f.Name("tier").DataType(dictType))
+            .Build();
+
+        var idB = new Int32Array.Builder();
+        var idxB = new Int32Array.Builder();
+        for (int i = 0; i < 50; i++)
+        {
+            idB.Append(i);
+            idxB.Append(i % 3);
+        }
+
+        var valB = new StringArray.Builder();
+        valB.Append("BRONZE");
+        valB.Append("SILVER");
+        valB.Append("GOLD");
+
+        var dictArr = new DictionaryArray(dictType, idxB.Build(), valB.Build());
+        var batch = new RecordBatch(schema, new IArrowArray[] { idB.Build(), dictArr }, 50);
+        byte[] ipcBytes = SerializeBatch(schema, batch);
+
+        // 1. Ingest into DuckDB
+        conn.IngestArrowIpcNative("tier_source", ipcBytes);
+
+        // 2. Export table to Parquet bytes using ParquetBuffer
+        byte[] parquetBytes = Parquet.ParquetBuffer.ExportTableToParquetBytes(conn, "tier_source", "ZSTD");
+        Assert.True(parquetBytes.Length > 0);
+
+        // 3. Inspect Parquet metadata in DuckDB to confirm dictionary encoding (RLE_DICTIONARY)
+        string tempPq = Path.Combine(Path.GetTempPath(), $"pq_verify_{Guid.NewGuid():N}.parquet");
+        File.WriteAllBytes(tempPq, parquetBytes);
+        try
+        {
+            using var metaRes = conn.ExecuteQuery($"SELECT column_id, encodings::VARCHAR FROM parquet_metadata('{tempPq}');");
+            Assert.Equal(2L, metaRes.RowCount);
+
+            // Column 1 (tier) should contain RLE_DICTIONARY encoding
+            string tierEncodings = metaRes.GetString(1, 1);
+            Assert.Contains("RLE_DICTIONARY", tierEncodings);
+
+            // 4. Ingest exported Parquet bytes back into DuckDB and verify round-trip parity
+            Parquet.ParquetBuffer.IngestParquetBytes(conn, "tier_roundtrip", parquetBytes);
+
+            using var verifyRes = conn.ExecuteQuery("SELECT tier, count(*) FROM tier_roundtrip GROUP BY tier ORDER BY tier;");
+            Assert.Equal(3L, verifyRes.RowCount);
+            Assert.Equal("BRONZE", verifyRes.GetString(0, 0));
+            Assert.Equal("GOLD", verifyRes.GetString(1, 0));
+            Assert.Equal("SILVER", verifyRes.GetString(2, 0));
+        }
+        finally
+        {
+            if (File.Exists(tempPq)) File.Delete(tempPq);
+        }
+    }
+
+    [Fact]
+    public void Test_NativeArrowIpc_PythonCompatibility_DictionaryEncoding()
+    {
+        string pyScript = @"
+import sys
+try:
+    import pyarrow as pa
+except ImportError:
+    sys.exit(42)
+
+categories = pa.array(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'])
+indices = pa.array([0, 1, 2, 3, 1, 0, 2, None], type=pa.int32())
+dict_array = pa.DictionaryArray.from_arrays(indices, categories)
+
+schema = pa.schema([
+    ('event_id', pa.int32()),
+    ('severity', dict_array.type)
+])
+
+batch = pa.record_batch([
+    pa.array([1, 2, 3, 4, 5, 6, 7, 8], type=pa.int32()),
+    dict_array
+], schema=schema)
+
+sink = pa.BufferOutputStream()
+with pa.ipc.new_stream(sink, schema) as writer:
+    writer.write_batch(batch)
+
+buf = sink.getvalue()
+sys.stdout.buffer.write(buf.to_pybytes())
+";
+
+        string tempPyFile = Path.Combine(Path.GetTempPath(), $"pyarrow_dict_{Guid.NewGuid():N}.py");
+        File.WriteAllText(tempPyFile, pyScript);
+
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "python3",
+                Arguments = tempPyFile,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+
+            using var proc = Process.Start(psi);
+            if (proc == null) return;
+
+            using var ms = new MemoryStream();
+            proc.StandardOutput.BaseStream.CopyTo(ms);
+            proc.WaitForExit();
+
+            if (proc.ExitCode == 42)
+            {
+                // pyarrow not installed, skip gracefully
+                return;
+            }
+
+            Assert.Equal(0, proc.ExitCode);
+            byte[] pyIpcBytes = ms.ToArray();
+            Assert.True(pyIpcBytes.Length > 0);
+
+            using var db = new Database(":memory:");
+            var conn = db.Connection;
+
+            conn.IngestArrowIpcNative("py_events", pyIpcBytes);
+
+            using var res = conn.ExecuteQuery("SELECT event_id, severity FROM py_events ORDER BY event_id;");
+            Assert.Equal(8L, res.RowCount);
+            Assert.Equal("LOW", res.GetString(0, 1));
+            Assert.Equal("MEDIUM", res.GetString(1, 1));
+            Assert.Equal("HIGH", res.GetString(2, 1));
+            Assert.Equal("CRITICAL", res.GetString(3, 1));
+            Assert.True(res.IsNull(7, 1));
+        }
+        finally
+        {
+            if (File.Exists(tempPyFile)) File.Delete(tempPyFile);
+        }
+    }
+
     private static byte[] SerializeBatch(Schema schema, RecordBatch batch)
     {
         using var ms = new MemoryStream();

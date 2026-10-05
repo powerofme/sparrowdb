@@ -10,6 +10,8 @@ Designed for high-throughput, low-latency analytical workloads, sparrowDb operat
 
 - **100% In-Memory Columnar Engine**: Runs embedded DuckDB instances directly in RAM. Zero temporary disk files, zero housekeeping requirements.
 - **Native Vectorized Arrow IPC Ingestion**: Ingests Apache Arrow IPC streams directly into DuckDB using the Arrow C Data Interface (`duckdb_arrow_scan`), bypassing managed row-by-row iteration and achieving up to **25,000,000+ rows/sec** with zero GC allocations.
+- **Dictionary Encoding Support**: Ingests dictionary-encoded Arrow IPC streams (e.g. PyArrow `.dictionary_encode()`) directly into DuckDB without prior unpacking.
+- **Automatic Parquet Dictionary Encoding**: In-memory Parquet exports automatically leverage `RLE_DICTIONARY` encoding on string fields for compact storage and faster query execution.
 - **Multi-Worker Concurrency**: Multiple queue workers concurrently ingesting into distinct tables on a shared `:memory:` database with zero lock contention (**76,000,000+ rows/sec** across 23 concurrent tables).
 - **In-Memory Parquet Byte Buffers & Chunking**: Export and ingest Parquet directly as `byte[]` or chunked `IEnumerable<byte[]>` without local disk persistence—ideal for custom HTTP connection pooling and parallel blob loading with IBM COS or S3.
 - **Vectorized Analytical SQL**: Native SIMD-accelerated filtering, aggregation, and pivoting over millions of records in milliseconds.

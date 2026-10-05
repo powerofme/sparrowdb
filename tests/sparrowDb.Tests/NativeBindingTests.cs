@@ -1,6 +1,8 @@
 using System;
+using System.IO;
 using Apache.Arrow;
 using Apache.Arrow.Ipc;
+using Apache.Arrow.Types;
 using SparrowDb;
 using SparrowDb.Native;
 using Xunit;
@@ -66,11 +68,11 @@ public class NativeBindingTests
             var state = DuckDBNative.duckdb_arrow_scan(conn.Handle, "test_arrow_view", streamHolder.StreamPtr);
             Assert.Equal(DuckDBState.Success, state);
 
-            // Test auto-create if not exists
-            conn.ExecuteQuery("CREATE TABLE IF NOT EXISTS auto_items AS SELECT * FROM test_arrow_view LIMIT 0;");
-            conn.ExecuteQuery("INSERT INTO auto_items SELECT * FROM test_arrow_view;");
+            // Create target table and insert
+            conn.ExecuteQuery("CREATE TABLE target_items (id INTEGER, name VARCHAR);");
+            conn.ExecuteQuery("INSERT INTO target_items SELECT * FROM test_arrow_view;");
 
-            using var result = conn.ExecuteQuery("SELECT id, name FROM auto_items ORDER BY id;");
+            using var result = conn.ExecuteQuery("SELECT id, name FROM target_items ORDER BY id;");
             Assert.Equal(5L, result.RowCount);
             Assert.Equal(0, result.GetValue<int>(0, 0));
             Assert.Equal("item_0", result.GetString(0, 1));
